@@ -6,15 +6,16 @@ using System.Net.Configuration;
 using System.Text.RegularExpressions;
 
 
-namespace filetoSQLtest
+namespace filetoSQL
 {
     internal class Program
     {
         const int versionMajor = 1;
         const int versionMinor = 0;
-        const int versionRevision = 3;
+        const int versionRevision = 4;
         static string logFilePath = @"fileToSQL_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".txt";
         static bool RUN_VERBOSE = false;
+        static bool FORCE_RUN = false;
 
         public static void WriteLog(string logMessage)
         {
@@ -118,7 +119,35 @@ namespace filetoSQLtest
             Console.WriteLine();
         }
 
-         
+        static string GetOperation(string query)
+        {
+            string op = string.Empty;
+            if (query.Contains("ALTER"))
+            {
+                op = "ALTER";
+            }
+            else if (query.Contains("UPDATE"))
+            {
+                op = "UPDATE";
+            }
+            else if (query.Contains("INSERT"))
+            {
+                op = "INSERT";
+            }
+            else if (query.Contains("CREATE"))
+            {
+                op = "CREATE";
+            }
+            else if (query.Contains("DROP"))
+            {
+                op = "DROP";
+            }
+            else
+            {
+                op = "UNKNOWN";
+            }
+            return op;
+        }
          
         static void Usage()
         {
@@ -131,6 +160,7 @@ namespace filetoSQLtest
             Console.Write("\tFileToDB");
             Console.ForegroundColor = ConsoleColor.DarkGray;
             Console.Write(" [-v] ");
+            Console.Write(" [-f] ");
             Console.WriteLine();
             Console.Write(" -s ");
             Console.ForegroundColor = ConsoleColor.White;
@@ -154,7 +184,7 @@ namespace filetoSQLtest
             Console.Write("\tFileToDB");
             Console.ForegroundColor = ConsoleColor.DarkGray;
             Console.Write(" [--verbose] ");
-            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.Write(" [--force] ");
             Console.Write(" --server ");
             Console.ForegroundColor = ConsoleColor.White;
             Console.Write("server");
@@ -186,6 +216,7 @@ namespace filetoSQLtest
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("Options:");
             Console.WriteLine("\t-v | --verbose\tBe more verbose about it (optional).");
+            Console.WriteLine("\t-f | --force\tForce update (optional). Otherwise only update dealer changes.");
             Console.WriteLine("\t-s | --server\tHostname (or IP) of the database server.");
             Console.WriteLine("\t-d | --database\tName of the database to connect to.");
             Console.WriteLine("\t-u | --user\tUssername with permissions to run the query.");
@@ -257,6 +288,10 @@ namespace filetoSQLtest
                     case "--verbose":
                         RUN_VERBOSE = true;
                         break;
+                    case "-f":
+                    case "--force":
+                        FORCE_RUN = true;
+                        break;
                     default:
                         filename = args[i];
                         break;
@@ -267,6 +302,7 @@ namespace filetoSQLtest
             PrintInfo("  Database:      ", database);
             PrintInfo("  User:          ", user);
             PrintInfo("  Password:      ", "********"); // password);
+            PrintInfo("  Force update:  ", (FORCE_RUN?"True":"False"));
 
             string directoryPath = Path.GetDirectoryName(filename);
             string searchPattern = Path.GetFileName(filename);
@@ -292,7 +328,7 @@ namespace filetoSQLtest
             }
 
             string connectionString = "Server=" + server + ";Database=" + database + ";User Id=" + user + ";Password=" + password + ";";
-            string operation = "CREATE";
+            string operation = String.Empty;
             if (RUN_VERBOSE == true)
             {
                 Console.ForegroundColor = ConsoleColor.White;
@@ -317,7 +353,11 @@ namespace filetoSQLtest
                     Console.Write("{0} ", file);
                     Console.ForegroundColor = ConsoleColor.DarkGray;
                     Console.Write("... ");
-                    if (file.Contains("TOC_InsTarTOC_Backup"))
+                    if (!RUN_VERBOSE && (
+                         file.Contains("TOC_InsTarTOC_Backup") ||
+                         file.Contains("PA_Taller_AbrirOT")
+                        )
+                       )
                     {
                         Console.ForegroundColor = ConsoleColor.DarkGray;
                         Console.Write("[");
@@ -328,21 +368,8 @@ namespace filetoSQLtest
                         continue;
                     }
                     string fileContent = File.ReadAllText(file);
-                    if (fileContent.Contains("DROP"))
-                    {
-                        operation = "DROP";
-                    }
-                    else if (fileContent.Contains("ALTER"))
-                    {
-                        operation = "ALTER";
-                    }
-                    else if (fileContent.Contains("UPDATE"))
-                    {
-                        operation = "UPDATE";
-                    }
-                    else {
-                        operation = "CREATE";
-                    }
+                    operation = GetOperation(fileContent);
+                    
 
                     if (RUN_VERBOSE == true)
                     {
@@ -390,16 +417,48 @@ namespace filetoSQLtest
                         Console.WriteLine("]");
                         continue;
                     }
-                    using (SqlConnection connection = new SqlConnection(connectionString))
+                    if (true == FORCE_RUN 
+                        || (fileContent.Contains("_FMT].") 
+                        || fileContent.Contains("_FMT.")
+                        || fileContent.Contains("_FAL].")
+                        || fileContent.Contains("_FAL.")
+                        || fileContent.Contains("_ENM].")
+                        || fileContent.Contains("_ENM.")
+                        || fileContent.Contains("_ING].")
+                        || fileContent.Contains("_ING.")
+                        || fileContent.Contains("_FRO].")
+                        || fileContent.Contains("_FRO.")
+                        || fileContent.Contains("_NAR].")
+                        || fileContent.Contains("_NAR.")
+                        || fileContent.Contains("_TYN].")
+                        || fileContent.Contains("_TYN.")
+                        || fileContent.Contains("_TYM].")
+                        || fileContent.Contains("_TYM.")
+                        || fileContent.Contains("_SON].")
+                        || fileContent.Contains("_SON.")
+
+                        ))
                     {
-                        try
+                        using (SqlConnection connection = new SqlConnection(connectionString))
                         {
-                            connection.Open();
-                            SqlCommand command = new SqlCommand(fileContent, connection);
                             try
                             {
-                                command.ExecuteNonQuery();
-                                PrintOkStatus(operation);
+                                connection.Open();
+                                SqlCommand command = new SqlCommand(fileContent, connection);
+                                try
+                                {
+                                    command.ExecuteNonQuery();
+                                    PrintOkStatus(operation);
+                                }
+                                catch (SqlException ex)
+                                {
+                                    PrintErrorStatus(operation, ex.Message);
+                                }
+                                catch
+                                {
+                                    PrintErrorStatus(operation);
+                                }
+                                connection.Close();
                             }
                             catch (SqlException ex)
                             {
@@ -409,16 +468,15 @@ namespace filetoSQLtest
                             {
                                 PrintErrorStatus(operation);
                             }
-                            connection.Close();
                         }
-                        catch (SqlException ex)
-                        {
-                            PrintErrorStatus(operation, ex.Message);
-                        }
-                        catch
-                        {
-                            PrintErrorStatus(operation);
-                        }
+                    }
+                    else {
+                        Console.ForegroundColor = ConsoleColor.DarkGray;
+                        Console.Write("[");
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.Write("IGNORING (No changes detected)");
+                        Console.ForegroundColor = ConsoleColor.DarkGray;
+                        Console.WriteLine("]");
                     }
                 }
                 Console.ForegroundColor = ConsoleColor.White;
